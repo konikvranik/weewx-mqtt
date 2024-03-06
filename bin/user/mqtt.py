@@ -106,14 +106,16 @@ try:
 except ImportError:
     from urlparse import urlparse
 
-import paho.mqtt.client as mqtt
 import random
 import socket
 import sys
 import time
 
+import paho.mqtt.client as mqtt
+
 try:
     import cjson as json
+
     setattr(json, 'dumps', json.encode)
     setattr(json, 'loads', json.decode)
 except (ImportError, AttributeError):
@@ -125,7 +127,7 @@ except (ImportError, AttributeError):
 import weewx
 import weewx.restx
 import weewx.units
-from weeutil.weeutil import to_int, to_bool, accumulateLeaves
+from weeutil.weeutil import to_int, to_bool
 
 VERSION = "0.24"
 
@@ -137,22 +139,37 @@ try:
     # weewx4 logging
     import weeutil.logger
     import logging
+
     log = logging.getLogger(__name__)
+
+
     def logdbg(msg):
         log.debug(msg)
+
+
     def loginf(msg):
         log.info(msg)
+
+
     def logerr(msg):
         log.error(msg)
 except ImportError:
     # old-style weewx logging
     import syslog
+
+
     def logmsg(level, msg):
         syslog.syslog(level, 'restx: MQTT: %s' % msg)
+
+
     def logdbg(msg):
         logmsg(syslog.LOG_DEBUG, msg)
+
+
     def loginf(msg):
         logmsg(syslog.LOG_INFO, msg)
+
+
     def logerr(msg):
         logmsg(syslog.LOG_ERR, msg)
 
@@ -161,6 +178,7 @@ def _compat(d, old_label, new_label):
     if old_label in d and new_label not in d:
         d.setdefault(new_label, d[old_label])
         d.pop(old_label)
+
 
 def _obfuscate_password(url):
     parts = urlparse(url)
@@ -173,6 +191,7 @@ def _obfuscate_password(url):
             parts.username, host_info))
         url = parts.geturl()
     return url
+
 
 # some unit labels are rather lengthy.  this reduces them to something shorter.
 UNIT_REDUCTIONS = {
@@ -192,13 +211,15 @@ UNIT_REDUCTIONS = {
     'uv_index': None,
     'percent': None,
     'unix_epoch': None,
-    }
+}
+
 
 # return the units label for an observation
 def _get_units_label(obs, unit_system, unit_type=None):
     if unit_type is None:
         (unit_type, _) = weewx.units.getStandardUnitType(unit_system, obs)
     return UNIT_REDUCTIONS.get(unit_type, unit_type)
+
 
 # get the template for an observation based on the observation key
 def _get_template(obs_key, overrides, append_units_label, unit_system):
@@ -274,6 +295,8 @@ class MQTT(weewx.restx.StdRESTbase):
         if 'tls' in config_dict['StdRESTful']['MQTT']:
             site_dict['tls'] = dict(config_dict['StdRESTful']['MQTT']['tls'])
 
+        if 'hass' in config_dict['StdRESTful']['MQTT']:
+            site_dict['hass'] = dict(config_dict['StdRESTful']['MQTT']['hass'])
         if 'inputs' in config_dict['StdRESTful']['MQTT']:
             site_dict['inputs'] = dict(config_dict['StdRESTful']['MQTT']['inputs'])
             # In the 'inputs' section, option 'units' is now 'unit'.
@@ -333,13 +356,13 @@ class TLSDefaults(object):
         self.TLS_OPTIONS = [
             'ca_certs', 'certfile', 'keyfile',
             'cert_reqs', 'tls_version', 'ciphers'
-            ]
+        ]
         # map for Paho acceptable TLS cert request options
         self.CERT_REQ_OPTIONS = {
             'none': ssl.CERT_NONE,
             'optional': ssl.CERT_OPTIONAL,
             'required': ssl.CERT_REQUIRED
-            }
+        }
         # Map for Paho acceptable TLS version options. Some options are
         # dependent on the OpenSSL install so catch exceptions
         self.TLS_VER_OPTIONS = dict()
@@ -390,7 +413,7 @@ class MQTTThread(weewx.restx.RESTThread):
                  post_interval=None, stale=None,
                  log_success=True, log_failure=True,
                  timeout=60, max_tries=3, retry_wait=5,
-                 max_backlog=sys.maxsize):
+                 max_backlog=sys.maxsize, hass={}):
         super(MQTTThread, self).__init__(queue,
                                          protocol_name='MQTT',
                                          manager_dict=manager_dict,
@@ -408,6 +431,7 @@ class MQTTThread(weewx.restx.RESTThread):
         self.upload_all = True if obs_to_upload.lower() == 'all' else False
         self.append_units_label = append_units_label
         self.tls_dict = {}
+        self.hass = hass
         if tls is not None:
             # we have TLS options so construct a dict to configure Paho TLS
             dflts = TLSDefaults()
@@ -453,7 +477,7 @@ class MQTTThread(weewx.restx.RESTThread):
             mc.connect(url.hostname, url.port)
         except (socket.error, socket.timeout, socket.herror) as e:
             logerr('Failed to connect to MQTT server (%s): %s' %
-                    (_obfuscate_password(self.server_url), str(e)))
+                   (_obfuscate_password(self.server_url), str(e)))
             self.mc = None
             return
         mc.loop_start()
@@ -492,8 +516,8 @@ class MQTTThread(weewx.restx.RESTThread):
                 if to_units is not None:
                     (from_unit, from_group) = weewx.units.getStandardUnitType(
                         record['usUnits'], k)
-                    from_t = (v, from_unit, from_group)
                     v = weewx.units.convert(from_t, to_units)[0]
+                    from_t = (v, from_unit, from_group)
                 s = fmt % v
                 data[name] = s
             except (TypeError, ValueError):
@@ -522,6 +546,7 @@ class MQTTThread(weewx.restx.RESTThread):
         self.get_mqtt_client()
         if not self.mc:
             raise weewx.restx.FailedPost('MQTT client not available')
+        self.configure_hass(data)
         if self.aggregation.find('aggregate') >= 0:
             tpc = self.topic + '/loop'
             (res, mid) = self.mc.publish(tpc, json.dumps(data),
@@ -537,3 +562,49 @@ class MQTTThread(weewx.restx.RESTThread):
                 if res != mqtt.MQTT_ERR_SUCCESS:
                     logerr("publish failed for %s: %s" %
                            (tpc, mqtt.error_string(res)))
+
+    def configure_hass(self, data):
+        device_id = "ventus_830"
+        device_payload = {
+            "connections": [
+                [
+                    "MAC",
+                    "CC:50:E3:D1:A9:CD"
+                ],
+                [
+                    "IP",
+                    "192.168.0.50"
+                ]
+            ],
+            "identifiers": "MAC:CC:50:E3:D1:A9:CD",
+            "manufacturer": "Ventus",
+            "model": "Ventus 830"
+        }
+        for k in self.hass:
+            if k in data.keys():
+                try:
+                    tpc = "homeassistant/sensor/%s/config" % k
+                    name = self.hass[k].get('name', k)
+                    payload = {
+                        "name": name,
+                        "unique_id": "%s_device.%s" % (device_id, k),
+                        "state_topic": self.topic + '/loop',
+                        "suggested_display_precision": 2,
+                        "value_template": "{{ value_json.%s }}" % k,
+                        "device": device_payload
+                    }
+                    self._add_if_exists(k, payload, 'unit_of_measurement')
+                    self._add_if_exists(k, payload, 'device_class')
+                    self._add_if_exists(k, payload, 'icon')
+                    (res, mid) = self.mc.publish(tpc, json.dumps(payload),
+                                                 retain=self.retain)
+                    if res != mqtt.MQTT_ERR_SUCCESS:
+                        logerr("publish failed for %s: %s" %
+                               (tpc, mqtt.error_string(res)))
+
+                except (TypeError, ValueError):
+                    pass
+
+    def _add_if_exists(self, k, payload, type):
+        if self.hass[k].get(type):
+            payload[type] = self.hass[k].get(type)
