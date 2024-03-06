@@ -564,27 +564,18 @@ class MQTTThread(weewx.restx.RESTThread):
                            (tpc, mqtt.error_string(res)))
 
     def configure_hass(self, data):
-        device_id = "ventus_830"
-        device_payload = {
-            "connections": [
-                [
-                    "MAC",
-                    "CC:50:E3:D1:A9:CD"
-                ],
-                [
-                    "IP",
-                    "192.168.0.50"
-                ]
-            ],
-            "identifiers": "MAC:CC:50:E3:D1:A9:CD",
-            "manufacturer": "Ventus",
-            "model": "Ventus 830"
-        }
-        for k in self.hass:
+        device_id = self.hass['device']['id']
+        device_payload = {"identifiers": self.hass['device']['identifiers'],
+                          "manufacturer": self.hass['device']['manufacturer'],
+                          "model": self.hass['device']['model'],
+                          'connections': []}
+        for c in self.hass['device']['connections']:
+            device_payload['connections'].append([c, self.hass['device']['connections'][c]])
+        for k in self.hass['sensors']:
             if k in data.keys():
                 try:
                     tpc = "homeassistant/sensor/%s/config" % k
-                    name = self.hass[k].get('name', k)
+                    name = self.hass['sensors'][k].get('name', k)
                     payload = {
                         "name": name,
                         "unique_id": "%s_device.%s" % (device_id, k),
@@ -606,5 +597,5 @@ class MQTTThread(weewx.restx.RESTThread):
                     pass
 
     def _add_if_exists(self, k, payload, type):
-        if self.hass[k].get(type):
-            payload[type] = self.hass[k].get(type)
+        if self.hass['sensors'][k].get(type):
+            payload[type] = self.hass['sensors'][k].get(type)
